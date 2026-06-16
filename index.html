@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>半透明のたまご — ぷにぷに重力シミュレーション</title>
+<style>
+  :root {
+    --text: rgba(255, 255, 255, 0.9);
+    --text-dim: rgba(255, 255, 255, 0.5);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    /* 奥行きのある暗い空気感。たまごを主役にする為の背景。 */
+    background: radial-gradient(125% 125% at 50% 22%, #29314a 0%, #151826 46%, #0a0c12 100%);
+    color: var(--text);
+    -webkit-user-select: none; user-select: none;
+    touch-action: none;
+  }
+  #scene { position: fixed; inset: 0; display: block; cursor: grab; }
+  #scene.grabbing { cursor: grabbing; }
+
+  /* 操作ヒント（上部・控えめ・自動で消える） */
+  #hint {
+    position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+    font-size: 13px; letter-spacing: 0.03em; color: var(--text-dim);
+    text-align: center; line-height: 1.7; pointer-events: none;
+    transition: opacity 1.1s ease; text-shadow: 0 1px 6px rgba(0,0,0,0.6);
+  }
+  #hint b { color: var(--text); font-weight: 500; }
+  @media (prefers-reduced-motion: reduce) { #hint { transition: none; } }
+</style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div id="hint"><b>ドラッグして傾ける</b><br><span id="hintSub">中のかたまりが重力で流れます</span></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // ============================================================
+  // 1. アイコスフィア生成（頂点を溶接した連結メッシュ）
+  //    中点をキャッシュして共有頂点の単位球を自前で作る。
+  //    返すのは半径1の方向ベクトル群・面・インデックス。
+  // ============================================================
+  function buildIcosphere(subdiv) {
+    const t = (1 + Math.sqrt(5)) / 2;
+    let verts = [
+      [-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0],
+      [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+      [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1],
+    ];
+    let faces = [
+      [0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],
+      [1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],
+      [3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],
+      [4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1],
+    ];
+    for (let s = 0; s < subdiv; s++) {
+      const mid = {};
+      const nf = [];
+      const midpoint = (a, b) => {
+        const key = a < b ? a + "_" + b : b + "_" + a;
+        if (mid[key] !== undefined) return mid[key];
+        const va = verts[a], vb = verts[b];
+        verts.push([(va[0]+vb[0])/2, (va[1]+vb[1])/2, (va[2]+vb[2])/2]);
+        return (mid[key] = verts.length - 1);
+      };
+      for (const f of faces) {
+        const a = midpoint(f[0], f[1]);
+        const b = midpoint(f[1], f[2]);
+        const c = midpoint(f[2], f[0]);
+        nf.push([f[0],a,c],[f[1],b,a],[f[2],c,b],[a,b,c]);
+      }
+      faces = nf;
+    }
+    const dir = new Float32Array(verts.length * 3); // 正規化した方向
+    for (let i = 0; i < verts.length; i++) {
+      const v = verts[i];
+      const len = Math.hypot(v[0], v[1], v[2]) || 1;
+      dir[i*3] = v[0]/len; dir[i*3+1] = v[1]/len; dir[i*3+2] = v[2]/len;
+    }
+    const index = new Uint16Array(faces.length * 3);
+    for (let i = 0; i < faces.length; i++) {
+      index[i*3] = faces[i][0]; index[i*3+1] = faces[i][1]; index[i*3+2] = faces[i][2];
+    }
+    return { dir, faces, index, count: verts.length };
+  }
+
+  // 与えた頂点配列から一意な辺（バネ）を rest 長付きで作る
+  function buildEdges(pos, faces) {
+    const set = new Set();
+    const edges = [];
+    const add = (a, b) => {
+      const key = a < b ? a + "_" + b : b + "_" + a;
+      if (set.has(key)) return;
+      set.add(key);
+      const dx = pos[b*3]-pos[a*3], dy = pos[b*3+1]-pos[a*3+1], dz = pos[b*3+2]-pos[a*3+2];
+      edges.push({ a, b, rest: Math.hypot(dx, dy, dz) });
+    };
+    for (const f of faces) { add(f[0],f[1]); add(f[1],f[2]); add(f[2],f[0]); }
+    return edges;
+  }
+
+  // 符号付き四面体の総和で閉曲面の体積
+  function computeVolume(p, faces) {
+    let v = 0;
+    for (let i = 0; i < faces.length; i++) {
+      const a = faces[i][0]*3, b = faces[i][1]*3, c = faces[i][2]*3;
+      v += (p[a]*(p[b+1]*p[c+2] - p[b+2]*p[c+1])
+          + p[a+1]*(p[b+2]*p[c] - p[b]*p[c+2])
+          + p[a+2]*(p[b]*p[c+1] - p[b+1]*p[c]));
+    }
+    return v / 6;
+  }
+
+  // 内圧：各面を外向き法線方向（×面積）に押す
+  function accumulatePressure(p, faces, frc, P) {
+    for (let i = 0; i < faces.length; i++) {
+      const ai = faces[i][0]*3, bi = faces[i][1]*3, ci = faces[i][2]*3;
+      const e1x=p[bi]-p[ai], e1y=p[bi+1]-p[ai+1], e1z=p[bi+2]-p[ai+2];
+      const e2x=p[ci]-p[ai], e2y=p[ci+1]-p[ai+1], e2z=p[ci+2]-p[ai+2];
+      const nx = (e1y*e2z - e1z*e2y) * 0.5;
+      const ny = (e1z*e2x - e1x*e2z) * 0.5;
+      const nz = (e1x*e2y - e1y*e2x) * 0.5;
+      const fx = nx*P, fy = ny*P, fz = nz*P;
+      frc[ai]+=fx; frc[ai+1]+=fy; frc[ai+2]+=fz;
+      frc[bi]+=fx; frc[bi+1]+=fy; frc[bi+2]+=fz;
+      frc[ci]+=fx; frc[ci+1]+=fy; frc[ci+2]+=fz;
+    }
+  }
+
+  // 辺（距離拘束）を反復で満たす
+  function solveEdges(pos, edges, stiffness, iter) {
+    for (let it = 0; it < iter; it++) {
+      for (let k = 0; k < edges.length; k++) {
+        const e = edges[k], a = e.a*3, b = e.b*3;
+        const dx=pos[b]-pos[a], dy=pos[b+1]-pos[a+1], dz=pos[b+2]-pos[a+2];
+        const d = Math.hypot(dx,dy,dz) || 1e-6;
+        const diff = (d - e.rest) / d * 0.5 * stiffness;
+        const ox=dx*diff, oy=dy*diff, oz=dz*diff;
+        pos[a]+=ox; pos[a+1]+=oy; pos[a+2]+=oz;
+        pos[b]-=ox; pos[b+1]-=oy; pos[b+2]-=oz;
+      }
+    }
+  }
+
+  // ============================================================
+  // 2. シーン / カメラ / レンダラ / 環境
+  // ============================================================
+  const R = 5;                       // たまごの基準半径
+  const canvas = document.getElementById("scene");
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x0a0c12, 0.01);
+
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+  camera.position.set(0, 1.5, 19);
+  camera.lookAt(0, 0, 0);
+
+  // --- 環境マップ（半透明の屈折・反射に色を与える為の簡易グラデ） ---
+  function makeEnvTexture() {
+    const c = document.createElement("canvas");
+    c.width = 16; c.height = 256;
+    const ctx = c.getContext("2d");
+    const g = ctx.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0.0, "#4a597e");
+    g.addColorStop(0.45, "#222838");
+    g.addColorStop(1.0, "#0a0c12");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 16, 256);
+    const tex = new THREE.CanvasTexture(c);
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    tex.encoding = THREE.sRGBEncoding;
+    return tex;
+  }
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envTex = pmrem.fromEquirectangular(makeEnvTexture()).texture;
+  scene.environment = envTex;
+
+  // ライティング：環境光＋斜め前からのキー＋青いリムで膜の張りを出す
+  scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x141414, 0.5));
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
+  keyLight.position.set(8, 13, 11); scene.add(keyLight);
+  const rimLight = new THREE.DirectionalLight(0x88aaff, 0.7);
+  rimLight.position.set(-11, -3, -9); scene.add(rimLight);
+  // 中身をほのかに照らす内部点光源（生命感）
+  const coreLight = new THREE.PointLight(0xffd9a0, 0.0, 30, 2);
+  scene.add(coreLight);
+
+  // 薄く肉厚なビニール膜（半透明・クリアコート光沢）。
+  //  depthWrite を切って中身が透けて見えるようにする。
+  const shellMat = new THREE.MeshPhysicalMaterial({
+    color: 0xdce8ff,
+    roughness: 0.12,
+    metalness: 0.0,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.18,
+    reflectivity: 0.6,
+    envMapIntensity: 1.1,
+    transparent: true,
+    opacity: 0.4,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+
+  // 中のかたまり：液体とも個体ともいえぬ半透明のゼリー（ほのかに発光）
+  const coreMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffb867,
+    roughness: 0.32,
+    metalness: 0.0,
+    clearcoat: 0.55,
+    clearcoatRoughness: 0.35,
+    envMapIntensity: 0.7,
+    emissive: 0xff7a2d,
+    emissiveIntensity: 0.35,
+    transparent: true,
+    opacity: 0.92,
+    side: THREE.DoubleSide,
+  });
+
+  // ============================================================
+  // 3. たまご（膜）とかたまり（中身）の構築
+  // ============================================================
+  // 単位球の方向ベクトルをたまご形に写像する。
+  //  ・縦に伸ばし、上を少し細く（下が丸い）卵形のテーパー。
+  function eggMap(ux, uy, uz, out, o) {
+    const taper = 1 - 0.20 * uy;     // 上(uy>0)を細く
+    out[o]   = ux * R * taper;
+    out[o+1] = uy * R * 1.32;
+    out[o+2] = uz * R * taper;
+  }
+
+  // --- 膜 ---
+  const shellGeo0 = buildIcosphere(3);          // 642頂点 / 1280面
+  const SN = shellGeo0.count, sFaces = shellGeo0.faces;
+  const sRest = new Float32Array(SN * 3);       // 元の形（戻る先）
+  for (let i = 0; i < SN; i++) {
+    eggMap(shellGeo0.dir[i*3], shellGeo0.dir[i*3+1], shellGeo0.dir[i*3+2], sRest, i*3);
+  }
+  const sPos  = new Float32Array(sRest);
+  const sPrev = new Float32Array(sRest);
+  const sFrc  = new Float32Array(SN * 3);
+  const sEdges = buildEdges(sRest, sFaces);
+  const sRestVol = computeVolume(sRest, sFaces);
+
+  const shellGeometry = new THREE.BufferGeometry();
+  shellGeometry.setAttribute("position", new THREE.BufferAttribute(sPos, 3));
+  shellGeometry.setIndex(new THREE.BufferAttribute(shellGeo0.index, 1));
+  shellGeometry.computeVertexNormals();
+  const shellMesh = new THREE.Mesh(shellGeometry, shellMat);
+  shellMesh.renderOrder = 2;
+  scene.add(shellMesh);
+
+  // --- かたまり（中身）---
+  const CORE_R = 3.1;
+  const coreGeo0 = buildIcosphere(3);           // 642頂点 / 1280面
+  const CN = coreGeo0.count, cFaces = coreGeo0.faces;
+  const cPos  = new Float32Array(CN * 3);
+  const cPrev = new Float32Array(CN * 3);
+  const cFrc  = new Float32Array(CN * 3);
+  for (let i = 0; i < CN; i++) {
+    cPos[i*3]   = coreGeo0.dir[i*3]   * CORE_R;
+    cPos[i*3+1] = coreGeo0.dir[i*3+1] * CORE_R;
+    cPos[i*3+2] = coreGeo0.dir[i*3+2] * CORE_R;
+  }
+  cPrev.set(cPos);
+  const cEdges = buildEdges(cPos, cFaces);
+  const cRestVol = computeVolume(cPos, cFaces);
+
+  const coreGeometry = new THREE.BufferGeometry();
+  coreGeometry.setAttribute("position", new THREE.BufferAttribute(cPos, 3));
+  coreGeometry.setIndex(new THREE.BufferAttribute(coreGeo0.index, 1));
+  coreGeometry.computeVertexNormals();
+  const coreMesh = new THREE.Mesh(coreGeometry, coreMat);
+  coreMesh.renderOrder = 1;
+  scene.add(coreMesh);
+
+  // かたまりを閉じ込める内側の楕円体（膜の肉厚ぶん内側）
+  const MARGIN = 0.55;
+  const cax = R - MARGIN, cay = R * 1.32 - MARGIN, caz = R - MARGIN;
+
+  // ============================================================
+  // 4. 重力の入力（PCドラッグ＝傾ける / スマホ＝本体の傾き）
+  // ============================================================
+  const G = 44;                       // 重力の強さ
+  let tiltX = 0, tiltZ = 0;           // ドラッグによる傾き
+  let oriX = 0, oriZ = 0;             // 端末傾きによる傾き
+  const gTarget = { x: 0, y: -G, z: 0 };
+  const gCur = { x: 0, y: -G, z: 0 };
+
+  function updateGravityTarget() {
+    const ax = tiltX + oriX;          // X軸まわり（前後）
+    const az = tiltZ + oriZ;          // Z軸まわり（左右）
+    // 下向きベクトルをXまわり→Zまわりに回す
+    let x = 0, y = -G, z = 0;
+    const cx = Math.cos(ax), sx = Math.sin(ax);
+    let y1 = y*cx - z*sx, z1 = y*sx + z*cx;
+    const cz = Math.cos(az), sz = Math.sin(az);
+    let x2 = x*cz - y1*sz, y2 = x*sz + y1*cz;
+    gTarget.x = x2; gTarget.y = y2; gTarget.z = z1;
+  }
+
+  // --- ポインタ（ドラッグで傾ける） ---
+  let dragging = false, lastX = 0, lastY = 0;
+  const hint = document.getElementById("hint");
+  let hintHidden = false;
+  function hideHint() {
+    if (hintHidden) return; hintHidden = true;
+    hint.style.opacity = "0";
+  }
+  canvas.addEventListener("pointerdown", (e) => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    canvas.classList.add("grabbing");
+    canvas.setPointerCapture(e.pointerId);
+    hideHint();
+    requestOrientationPermission();   // iOS 用：ユーザー操作で許可要求
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    tiltZ += (e.clientX - lastX) * 0.006;
+    tiltX += (e.clientY - lastY) * 0.006;
+    // 傾けすぎを緩く抑える（ひっくり返し手前まで）
+    const LIM = 2.7;
+    tiltX = Math.max(-LIM, Math.min(LIM, tiltX));
+    tiltZ = Math.max(-LIM, Math.min(LIM, tiltZ));
+    lastX = e.clientX; lastY = e.clientY;
+  });
+  function endDrag() { dragging = false; canvas.classList.remove("grabbing"); }
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+
+  // --- 端末の傾き（スマホ） ---
+  let orientationOn = false;
+  const DEG = Math.PI / 180;
+  function onOrientation(e) {
+    if (e.beta === null && e.gamma === null) return;
+    orientationOn = true;
+    hideHint();
+    // beta:前後(-180..180) gamma:左右(-90..90)。緩めに使う。
+    const beta = Math.max(-90, Math.min(90, e.beta || 0));
+    const gamma = Math.max(-90, Math.min(90, e.gamma || 0));
+    oriX = beta * DEG;
+    oriZ = -gamma * DEG;
+    // 端末傾きが主役になったらドラッグ分は徐々に無効化
+    tiltX *= 0.96; tiltZ *= 0.96;
+  }
+  function requestOrientationPermission() {
+    const D = window.DeviceOrientationEvent;
+    if (D && typeof D.requestPermission === "function") {
+      D.requestPermission().then((s) => {
+        if (s === "granted") window.addEventListener("deviceorientation", onOrientation);
+      }).catch(() => {});
+    }
+  }
+  if (window.DeviceOrientationEvent &&
+      typeof window.DeviceOrientationEvent.requestPermission !== "function") {
+    // Android 等：許可不要ならそのまま購読
+    window.addEventListener("deviceorientation", onOrientation);
+  }
+  // スマホ向けヒント文言
+  if ("ontouchstart" in window) {
+    document.getElementById("hintSub").textContent = "本体を傾けると中身が流れます";
+    hint.querySelector("b").textContent = "傾けて遊ぶ";
+  }
+
+  // ============================================================
+  // 5. 物理ステップ（Verlet + 位置ベース拘束）
+  // ============================================================
+  const DT = 1 / 120;
+  const ITER = 3;
+  // 膜
+  const S_PRESS = 55, S_STIFF = 0.9, S_RESTORE = 340, S_DAMP = 0.95;
+  // かたまり（やわらかいバネの集合＋内圧＝液体とも個体ともいえぬ塊）
+  const C_PRESS = 85, C_STIFF = 0.45, C_DAMP = 0.975;
+  // 接触（中身→膜を押し出す / 膜→中身を押し戻す）
+  const CR = 1.25, CR2 = CR * CR, K_SHELL = 0.55, K_CORE = 0.45;
+
+  function step() {
+    // 重力を滑らかに追従
+    gCur.x += (gTarget.x - gCur.x) * 0.08;
+    gCur.y += (gTarget.y - gCur.y) * 0.08;
+    gCur.z += (gTarget.z - gCur.z) * 0.08;
+
+    // --- 膜：内圧＋元形状への復元力 ---
+    sFrc.fill(0);
+    const sV = computeVolume(sPos, sFaces);
+    accumulatePressure(sPos, sFaces, sFrc, S_PRESS * (sRestVol / Math.max(sV, 1e-3) - 1));
+    for (let i = 0; i < SN*3; i++) sFrc[i] += (sRest[i] - sPos[i]) * S_RESTORE;
+    const dt2 = DT * DT;
+    for (let i = 0; i < SN*3; i++) {
+      const cur = sPos[i];
+      sPos[i] = cur + (cur - sPrev[i]) * S_DAMP + sFrc[i] * dt2;
+      sPrev[i] = cur;
+    }
+
+    // --- かたまり：内圧＋重力 ---
+    cFrc.fill(0);
+    const cV = computeVolume(cPos, cFaces);
+    accumulatePressure(cPos, cFaces, cFrc, C_PRESS * (cRestVol / Math.max(cV, 1e-3) - 1));
+    for (let i = 0; i < CN; i++) {
+      cFrc[i*3]   += gCur.x;
+      cFrc[i*3+1] += gCur.y;
+      cFrc[i*3+2] += gCur.z;
+    }
+    for (let i = 0; i < CN*3; i++) {
+      const cur = cPos[i];
+      cPos[i] = cur + (cur - cPrev[i]) * C_DAMP + cFrc[i] * dt2;
+      cPrev[i] = cur;
+    }
+
+    // --- 距離拘束 ---
+    solveEdges(sPos, sEdges, S_STIFF, ITER);
+    solveEdges(cPos, cEdges, C_STIFF, ITER);
+
+    // --- 接触（かたまりが膜を内側から押す。両者を押し合う） ---
+    for (let i = 0; i < CN; i++) {
+      const bx = cPos[i*3], by = cPos[i*3+1], bz = cPos[i*3+2];
+      for (let j = 0; j < SN; j++) {
+        const dx = sPos[j*3]-bx, dy = sPos[j*3+1]-by, dz = sPos[j*3+2]-bz;
+        const d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 >= CR2 || d2 < 1e-6) continue;
+        const d = Math.sqrt(d2);
+        const overlap = (CR - d) / d;
+        const ox = dx * overlap, oy = dy * overlap, oz = dz * overlap;
+        sPos[j*3]   += ox * K_SHELL; sPos[j*3+1] += oy * K_SHELL; sPos[j*3+2] += oz * K_SHELL;
+        cPos[i*3]   -= ox * K_CORE;  cPos[i*3+1] -= oy * K_CORE;  cPos[i*3+2] -= oz * K_CORE;
+      }
+    }
+
+    // --- かたまりを内側の楕円体に閉じ込める（膜を突き抜けない安全網） ---
+    for (let i = 0; i < CN; i++) {
+      const x = cPos[i*3], y = cPos[i*3+1], z = cPos[i*3+2];
+      const q = (x*x)/(cax*cax) + (y*y)/(cay*cay) + (z*z)/(caz*caz);
+      if (q > 1) {
+        const s = 1 / Math.sqrt(q);
+        cPos[i*3] = x*s; cPos[i*3+1] = y*s; cPos[i*3+2] = z*s;
+      }
+    }
+  }
+
+  // ============================================================
+  // 6. メインループ（固定ステップ + アキュムレータ）
+  // ============================================================
+  let acc = 0, last = performance.now();
+  function loop(now) {
+    let frame = (now - last) / 1000; last = now;
+    if (frame > 0.1) frame = 0.1;
+    acc += frame;
+
+    updateGravityTarget();
+    let steps = 0;
+    while (acc >= DT && steps < 8) { step(); acc -= DT; steps++; }
+
+    // 内部光源をかたまりの重心へ追従させ、発光を中心から滲ませる
+    let mx=0,my=0,mz=0;
+    for (let i=0;i<CN;i++){ mx+=cPos[i*3]; my+=cPos[i*3+1]; mz+=cPos[i*3+2]; }
+    coreLight.position.set(mx/CN, my/CN, mz/CN);
+    coreLight.intensity = 1.1;
+
+    shellGeometry.attributes.position.needsUpdate = true;
+    shellGeometry.computeVertexNormals();
+    coreGeometry.attributes.position.needsUpdate = true;
+    coreGeometry.computeVertexNormals();
+
+    renderer.render(scene, camera);
+    requestAnimationFrame(loop);
+  }
+
+  // ============================================================
+  // 7. リサイズ・起動
+  // ============================================================
+  function resize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener("resize", resize);
+
+  resize();
+  requestAnimationFrame(loop);
+  // しばらく操作が無ければヒントをそっと消す
+  setTimeout(hideHint, 7000);
+})();
+</script>
+</body>
+</html>
