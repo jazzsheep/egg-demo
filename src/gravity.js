@@ -23,7 +23,7 @@ export function createGravity(canvas, G) {
     dragging = true; lastX = e.clientX; lastY = e.clientY;
     canvas.classList.add("grabbing");
     canvas.setPointerCapture(e.pointerId);
-    requestOrientationPermission(); // iOS 用：ユーザー操作で許可要求
+    enableMotion(); // iOS 用：ユーザー操作で許可要求
   });
   canvas.addEventListener("pointermove", (e) => {
     if (!dragging) return;
@@ -57,19 +57,26 @@ export function createGravity(canvas, G) {
     gTarget.y = gy * G;
     gTarget.z = 0;
   }
-  function requestOrientationPermission() {
+  // 端末傾きを有効化する。iOS Safari は requestPermission を
+  //  「ユーザー操作のハンドラ内で同期的に」呼ぶ必要があるため、
+  //  click / touchend / pointerdown のどれでも確実に走らせる。
+  let motionRequested = false;
+  function enableMotion() {
+    if (motionRequested) return;
+    motionRequested = true;
     const D = window.DeviceOrientationEvent;
     if (D && typeof D.requestPermission === "function") {
       D.requestPermission().then((s) => {
         if (s === "granted") window.addEventListener("deviceorientation", onOrientation);
-      }).catch(() => {});
+        else motionRequested = false; // 拒否/失敗時は次のタップで再要求できるように
+      }).catch(() => { motionRequested = false; });
+    } else {
+      // Android 等：許可不要ならそのまま購読
+      window.addEventListener("deviceorientation", onOrientation);
     }
   }
-  if (window.DeviceOrientationEvent &&
-      typeof window.DeviceOrientationEvent.requestPermission !== "function") {
-    // Android 等：許可不要ならそのまま購読
-    window.addEventListener("deviceorientation", onOrientation);
-  }
+  window.addEventListener("click", enableMotion);
+  window.addEventListener("touchend", enableMotion);
 
   return { gTarget, update };
 }
