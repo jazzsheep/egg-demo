@@ -1,0 +1,39 @@
+version: '3'
+
+# egg-demo をスマホ実機で確認するための公開タスク。
+#   task start   … 静的サーバ + cloudflared トンネルを起動し、スマホ用URLを表示
+#   task stop    … start で起動したプロセスだけを停止
+#   task status  … 稼働状況と現在のURLを表示
+#   task qr      … 現在のURLのQRコードをターミナルに表示
+# 仕組み: localhost:8754 を PowerShell 製の静的サーバで配信し、
+#         cloudflared quick tunnel(HTTPS) で外部公開する（HTTPSなので端末傾きも動く）。
+
+tasks:
+  default:
+    silent: true
+    cmds:
+      - 'powershell -NoProfile -Command ''Write-Host "" ; Write-Host "  task start  : publish (show phone URL)" ; Write-Host "  task stop   : stop" ; Write-Host "  task status : status" ; Write-Host "  task qr     : show QR of current URL" ; Write-Host ""'''
+
+  start:
+    desc: スマホ確認用に HTTPS 公開してURLを表示
+    silent: true
+    cmds:
+      - 'powershell -NoProfile -ExecutionPolicy Bypass -Command ''$P=8754; $up=$false; try{$c=New-Object Net.Sockets.TcpClient; $c.Connect("127.0.0.1",$P); $c.Close(); $up=$true}catch{}; if(-not $up){Start-Process powershell -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File",".claude/preview-server.ps1","-Port","$P" -WindowStyle Hidden; Start-Sleep 1}; if(-not(Get-Process cloudflared -ErrorAction SilentlyContinue)){$cf=(Get-Command cloudflared -ErrorAction SilentlyContinue).Source; if(-not $cf){$cf=(Get-ChildItem "$env:LOCALAPPDATA/Microsoft/WinGet/Packages" -Recurse -Filter cloudflared.exe -ErrorAction SilentlyContinue | Select-Object -First 1).FullName}; Remove-Item "$env:TEMP/egg-cf.log" -ErrorAction SilentlyContinue; Start-Process $cf -ArgumentList "tunnel","--no-autoupdate","--http-host-header","localhost","--url","http://localhost:$P" -RedirectStandardError "$env:TEMP/egg-cf.log" -WindowStyle Hidden}; $u=$null; for($i=0;$i -lt 25;$i++){Start-Sleep 1; $m=Select-String "$env:TEMP/egg-cf.log" -Pattern "https://[a-z0-9-]+\.trycloudflare\.com" -ErrorAction SilentlyContinue | Select-Object -First 1; if($m){$u=$m.Matches[0].Value; break}}; if($u){Write-Host ""; Write-Host ("  Open on phone:  "+$u) -ForegroundColor Cyan; Write-Host "  iPhone: tap once, then allow Motion access" -ForegroundColor DarkGray; Write-Host "  task qr  -> show QR code" -ForegroundColor DarkGray; Write-Host ""}else{Write-Host "  URL not ready. run: task start" -ForegroundColor Red}'''
+
+  stop:
+    desc: 公開を停止（start で起動したものだけ）
+    silent: true
+    cmds:
+      - 'powershell -NoProfile -Command ''Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process | Where-Object {$_.Name -eq "powershell.exe" -and $_.CommandLine -like "*preview-server.ps1*" -and $_.ProcessId -ne $PID} | ForEach-Object {Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}; Write-Host "  stopped" -ForegroundColor Yellow'''
+
+  status:
+    desc: 稼働状況と現在のURLを表示
+    silent: true
+    cmds:
+      - 'powershell -NoProfile -Command ''if(Get-Process cloudflared -ErrorAction SilentlyContinue){$m=Select-String "$env:TEMP/egg-cf.log" -Pattern "https://[a-z0-9-]+\.trycloudflare\.com" -ErrorAction SilentlyContinue | Select-Object -First 1; if($m){Write-Host ("  running:  "+$m.Matches[0].Value) -ForegroundColor Cyan}else{Write-Host "  running (url unknown)" -ForegroundColor Cyan}}else{Write-Host "  stopped" -ForegroundColor DarkGray}'''
+
+  qr:
+    desc: 現在のURLのQRコードをターミナルに表示
+    silent: true
+    cmds:
+      - 'powershell -NoProfile -Command ''$m=Select-String "$env:TEMP/egg-cf.log" -Pattern "https://[a-z0-9-]+\.trycloudflare\.com" -ErrorAction SilentlyContinue | Select-Object -First 1; if($m){(Invoke-WebRequest -UseBasicParsing -UserAgent "curl/8.0" ("https://qrenco.de/"+$m.Matches[0].Value)).Content}else{Write-Host "  run: task start  first"}'''
