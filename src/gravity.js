@@ -38,16 +38,21 @@ export function createGravity(canvas, G) {
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
 
-  // --- 端末の傾き（スマホ）：実世界の重力を画面平面へ投影して gTarget に設定 ---
+  // --- 端末の傾き（スマホ）：実世界の重力ベクトルを端末座標へ射影して gTarget に設定 ---
   function onOrientation(e) {
     if (e.beta == null && e.gamma == null) return;
     orientationOn = true;
     const beta = (e.beta || 0) * DEG;   // 前後(pitch)
     const gamma = (e.gamma || 0) * DEG; // 左右(roll)
-    // 端末を立てるほど真下が強く、寝かせるほど弱まる（＝傾けて注ぐ感覚）
-    let gx = Math.sin(gamma);
-    let gy = -Math.sin(beta);
-    // 画面の向き（縦/横）を補正
+    const cB = Math.cos(beta), sB = Math.sin(beta);
+    const cG = Math.cos(gamma), sG = Math.sin(gamma);
+    // 端末座標系での下向き単位ベクトル（奥行きも含む正しい射影）。
+    //  単純な sin(gamma) 近似だと端末を立てた時(beta>90°)にジンバルで
+    //  gamma の符号が反転し、左右が逆になる。cos(beta) 込みにすると連続して反転しない。
+    let gx = cB * sG;   // 左右（右が +x）
+    let gy = -sB;       // 上下（画面の上が +y）
+    let gz = -cB * cG;  // 奥行き（手前が +z、画面奥が -z）
+    // 画面の向き（縦/横）を補正（画面平面内の x,y のみ回す。奥行き z はそのまま）
     const ang = (screen.orientation && screen.orientation.angle) ||
                 (typeof window.orientation === "number" ? window.orientation : 0);
     if (ang === 90)                      { const t = gx; gx = -gy; gy = t; }
@@ -55,7 +60,7 @@ export function createGravity(canvas, G) {
     else if (ang === 180)                { gx = -gx; gy = -gy; }
     gTarget.x = gx * G;
     gTarget.y = gy * G;
-    gTarget.z = 0;
+    gTarget.z = gz * G;
   }
   // 端末傾きを有効化する。iOS Safari は requestPermission を
   //  「ユーザー操作のハンドラ内で同期的に」呼ぶ必要があるため、

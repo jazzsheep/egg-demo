@@ -20,9 +20,9 @@ const CONFIG = {
   slime: {
     detail:    4,      // 中身の分割数（大きいほど均質で滑らか）
     size:      3.5,    // 中身の半径
-    pressure:  130,    // 内圧（丸い体積の保ち。大きいほど張る）
+    pressure:  90,     // 内圧（弾性。大きいほど張る／丸みへ戻る力が強い）
     stiffness: 0.6,    // バネの硬さ（小さいほど流れる。均質さとのバランス）
-    damping:   0.985,  // 速度減衰（小さいほどよく揺れる）
+    damping:   0.98,   // 速度減衰（小さいほどよく揺れる）
   },
   gravity:     4,      // 重力の強さ（体積は保たれるので主に流れの速さに効く）
 };
@@ -113,11 +113,11 @@ const CR = 1.3, CR2 = CR * CR, K_SHELL = 0.5, K_CORE = 0.5;
 const gCur = { x: 0, y: -G, z: 0 };
 
 function step() {
-  // 重力を滑らかに追従
+  // 重力を滑らかに追従（係数を上げて傾きへの反応をきびきびさせる）
   const gT = gravity.gTarget;
-  gCur.x += (gT.x - gCur.x) * 0.08;
-  gCur.y += (gT.y - gCur.y) * 0.08;
-  gCur.z += (gT.z - gCur.z) * 0.08;
+  gCur.x += (gT.x - gCur.x) * 0.2;
+  gCur.y += (gT.y - gCur.y) * 0.2;
+  gCur.z += (gT.z - gCur.z) * 0.2;
 
   const dt2 = DT * DT;
 
@@ -173,23 +173,9 @@ function step() {
   //  高さ y から uy を求め、その高さでのたまご内側の水平半径に押し戻す。
   clampToEgg();
 
-  // --- 体積の復元（非圧縮スライム） ---
-  //  クランプで少しずつ体積が抜けるのを防ぐ。重心まわりに等方スケールして
-  //  常に元の体積へ戻す＝つぶれずに「下に溜まりつつ丸みを保つ」挙動になる。
-  const V = computeVolume(cPos, cFaces);
-  if (V > 1e-3) {
-    let s = Math.cbrt(cRestVol / V);
-    s = Math.max(0.8, Math.min(1.25, s));
-    let mx = 0, my = 0, mz = 0;
-    for (let i = 0; i < CN; i++) { mx += cPos[i*3]; my += cPos[i*3+1]; mz += cPos[i*3+2]; }
-    mx /= CN; my /= CN; mz /= CN;
-    for (let i = 0; i < CN; i++) {
-      cPos[i*3]   = mx + (cPos[i*3]   - mx) * s;
-      cPos[i*3+1] = my + (cPos[i*3+1] - my) * s;
-      cPos[i*3+2] = mz + (cPos[i*3+2] - mz) * s;
-    }
-    clampToEgg(); // 復元で殻からはみ出した分だけ軽く戻す
-  }
+  // 体積は厳密には保持しない（びよんびよんと伸縮してよい）。
+  //  丸みへ戻る力は内圧（C_PRESS）とバネ（solveEdges）の弾性が担うので、
+  //  ここで等方スケールして元体積へ戻す処理は行わない。
 }
 
 // かたまりの各頂点を、その高さでのたまご内側の水平半径・上下限に押し戻す。
