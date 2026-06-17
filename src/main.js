@@ -1,5 +1,6 @@
 // エントリ：たまご（殻）とかたまり（中身）を構築し、物理ステップとループを回す。
-import { buildIcosphere, buildEdges, computeVolume, accumulatePressure, solveEdges }
+import { buildIcosphere, buildEdges, computeVolume, accumulatePressure, solveEdges,
+  buildAdjacency, smoothLaplacian }
   from "./icosphere.js";
 import { createScene } from "./scene.js";
 import { createGravity } from "./gravity.js";
@@ -20,9 +21,10 @@ const CONFIG = {
   slime: {
     detail:    4,      // 中身の分割数（大きいほど均質で滑らか）
     size:      3.5,    // 中身の半径
-    pressure:  90,     // 内圧（弾性。大きいほど張る／丸みへ戻る力が強い）
+    pressure:  130,    // 内圧（張り。大きいほど表面が張ってしわが出にくい）
     stiffness: 0.6,    // バネの硬さ（小さいほど流れる。均質さとのバランス）
     damping:   0.98,   // 速度減衰（小さいほどよく揺れる）
+    smooth:    0.3,    // 表面のしわ取り（液体のように滑らかに融合。0=オフ）
   },
   gravity:     4,      // 重力の強さ（体積は保たれるので主に流れの速さに効く）
 };
@@ -83,6 +85,8 @@ for (let i = 0; i < CN; i++) {
 cPrev.set(cPos);
 const cEdges = buildEdges(cPos, cFaces);
 const cRestVol = computeVolume(cPos, cFaces);
+const cAdj = buildAdjacency(CN, cEdges); // 平滑化用の隣接リスト
+const cTmp = new Float32Array(CN * 3);   // 平滑化の作業バッファ
 
 const coreGeometry = new THREE.BufferGeometry();
 coreGeometry.setAttribute("position", new THREE.BufferAttribute(cPos, 3));
@@ -107,6 +111,7 @@ let ITER = 6;
 const S_PRESS = 55, S_STIFF = 0.9, S_RESTORE = 340, S_DAMP = 0.95;
 // かたまり
 let C_PRESS = CONFIG.slime.pressure, C_STIFF = CONFIG.slime.stiffness, C_DAMP = CONFIG.slime.damping;
+const C_SMOOTH = CONFIG.slime.smooth;
 // 接触（殻が柔らかい時だけ、中身が殻を内側から押す）
 const CR = 1.3, CR2 = CR * CR, K_SHELL = 0.5, K_CORE = 0.5;
 
@@ -172,6 +177,16 @@ function step() {
   // --- かたまりを“たまご形の内側”に閉じ込める（殻を突き抜けない安全網） ---
   //  高さ y から uy を求め、その高さでのたまご内側の水平半径に押し戻す。
   clampToEgg();
+
+  // --- 表面のしわ取り（タウバン平滑化）---
+  //  重力でたわんだり殻に押し付けられた時に出る折れ目（高周波の凹凸）を均し、
+  //  液体のように滑らかに融合した見た目にする。正の係数で隣接平均へ寄せた後、
+  //  少し大きい負の係数で押し戻すことで、全体の形・体積をほぼ保ったまましわだけ取る。
+  if (C_SMOOTH > 0) {
+    smoothLaplacian(cPos, cAdj, C_SMOOTH, cTmp);
+    smoothLaplacian(cPos, cAdj, -(C_SMOOTH + 0.05), cTmp);
+    clampToEgg(); // 平滑化ではみ出した分だけ戻す
+  }
 
   // 体積は厳密には保持しない（びよんびよんと伸縮してよい）。
   //  丸みへ戻る力は内圧（C_PRESS）とバネ（solveEdges）の弾性が担うので、

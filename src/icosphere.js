@@ -91,6 +91,37 @@ export function accumulatePressure(p, faces, frc, P) {
   }
 }
 
+// 頂点の隣接リスト（平滑化用）を辺から CSR 形式で作る
+export function buildAdjacency(count, edges) {
+  const deg = new Int32Array(count);
+  for (const e of edges) { deg[e.a]++; deg[e.b]++; }
+  const start = new Int32Array(count + 1);
+  for (let i = 0; i < count; i++) start[i+1] = start[i] + deg[i];
+  const list = new Int32Array(start[count]);
+  const cur = start.slice(0, count);
+  for (const e of edges) { list[cur[e.a]++] = e.b; list[cur[e.b]++] = e.a; }
+  return { start, list };
+}
+
+// ラプラシアン平滑化を1回：各頂点を隣接平均へ lambda だけ寄せる（tmp は作業用）。
+//  しわ（高周波の凹凸）を均す。lambda<0 で“膨らませ”、正負2回かける（タウバン）と
+//  全体の形・体積をほぼ保ったまましわだけ取れる。
+export function smoothLaplacian(pos, adj, lambda, tmp) {
+  const { start, list } = adj;
+  const n = start.length - 1;
+  for (let i = 0; i < n; i++) {
+    const s = start[i], e = start[i+1], cnt = e - s;
+    if (cnt === 0) { tmp[i*3]=pos[i*3]; tmp[i*3+1]=pos[i*3+1]; tmp[i*3+2]=pos[i*3+2]; continue; }
+    let ax=0, ay=0, az=0;
+    for (let k = s; k < e; k++) { const j = list[k]*3; ax+=pos[j]; ay+=pos[j+1]; az+=pos[j+2]; }
+    ax/=cnt; ay/=cnt; az/=cnt;
+    tmp[i*3]   = pos[i*3]   + (ax - pos[i*3])   * lambda;
+    tmp[i*3+1] = pos[i*3+1] + (ay - pos[i*3+1]) * lambda;
+    tmp[i*3+2] = pos[i*3+2] + (az - pos[i*3+2]) * lambda;
+  }
+  pos.set(tmp);
+}
+
 // 辺（距離拘束）を反復で満たす
 export function solveEdges(pos, edges, stiffness, iter) {
   for (let it = 0; it < iter; it++) {
