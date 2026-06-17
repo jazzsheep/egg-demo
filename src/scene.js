@@ -61,15 +61,17 @@ export function createScene(canvas, opts) {
     side: THREE.DoubleSide,
   });
 
-  // 中のかたまり：濡れたような滑らかな黒スライム
+  // 中のかたまり：液体と固体の中間のゲル状。テカテカのビニール感を避け、
+  //  しっとりした半艶（サテン）に。clearcoat を弱め roughness を上げて、
+  //  しわに乗るシャープなハイライトを散らす。
   const coreMat = new THREE.MeshPhysicalMaterial({
-    color: 0x070809,
-    roughness: 0.22,
+    color: 0x0b0d10,
+    roughness: 0.38,
     metalness: 0.0,
-    clearcoat: 1.0,
-    clearcoatRoughness: 0.1,
-    reflectivity: 0.5,
-    envMapIntensity: 0.5,
+    clearcoat: 0.3,
+    clearcoatRoughness: 0.35,
+    reflectivity: 0.35,
+    envMapIntensity: 0.4,
     side: THREE.FrontSide,
   });
 

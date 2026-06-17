@@ -24,7 +24,8 @@ const CONFIG = {
     pressure:  130,    // 内圧（張り。大きいほど表面が張ってしわが出にくい）
     stiffness: 0.6,    // バネの硬さ（小さいほど流れる。均質さとのバランス）
     damping:   0.98,   // 速度減衰（小さいほどよく揺れる）
-    smooth:    0.3,    // 表面のしわ取り（液体のように滑らかに融合。0=オフ）
+    smooth:    0.45,   // 表面のしわ取り（液体のように滑らかに融合。0=オフ）
+    shape:     0.04,   // 形状記憶（元の丸い形へ戻る力＝固体っぽさ。0=完全な流体/大きいほど固い）
   },
   gravity:     4,      // 重力の強さ（体積は保たれるので主に流れの速さに効く）
 };
@@ -87,6 +88,7 @@ const cEdges = buildEdges(cPos, cFaces);
 const cRestVol = computeVolume(cPos, cFaces);
 const cAdj = buildAdjacency(CN, cEdges); // 平滑化用の隣接リスト
 const cTmp = new Float32Array(CN * 3);   // 平滑化の作業バッファ
+const cRest0 = new Float32Array(cPos);   // 元の丸い形（原点中心）。形状記憶の戻り先
 
 const coreGeometry = new THREE.BufferGeometry();
 coreGeometry.setAttribute("position", new THREE.BufferAttribute(cPos, 3));
@@ -112,6 +114,7 @@ const S_PRESS = 55, S_STIFF = 0.9, S_RESTORE = 340, S_DAMP = 0.95;
 // かたまり
 let C_PRESS = CONFIG.slime.pressure, C_STIFF = CONFIG.slime.stiffness, C_DAMP = CONFIG.slime.damping;
 const C_SMOOTH = CONFIG.slime.smooth;
+const C_SHAPE = CONFIG.slime.shape;
 // 接触（殻が柔らかい時だけ、中身が殻を内側から押す）
 const CR = 1.3, CR2 = CR * CR, K_SHELL = 0.5, K_CORE = 0.5;
 
@@ -156,6 +159,21 @@ function step() {
     cPrev[i] = cur;
   }
   solveEdges(cPos, cEdges, C_STIFF, ITER);
+
+  // --- 形状記憶（液体と固体の中間＝ゲルらしさ）---
+  //  各頂点を「現在の重心に再センタリングした元の丸い形」へ少しだけ引き戻す。
+  //  重力で流れつつも丸い形へ戻ろうとする弾性が出て、しわも根本から減る。
+  //  C_SHAPE が大きいほど固体寄り、0 で完全な流体。
+  if (C_SHAPE > 0) {
+    let mx = 0, my = 0, mz = 0;
+    for (let i = 0; i < CN; i++) { mx += cPos[i*3]; my += cPos[i*3+1]; mz += cPos[i*3+2]; }
+    mx /= CN; my /= CN; mz /= CN;
+    for (let i = 0; i < CN; i++) {
+      cPos[i*3]   += (mx + cRest0[i*3]   - cPos[i*3])   * C_SHAPE;
+      cPos[i*3+1] += (my + cRest0[i*3+1] - cPos[i*3+1]) * C_SHAPE;
+      cPos[i*3+2] += (mz + cRest0[i*3+2] - cPos[i*3+2]) * C_SHAPE;
+    }
+  }
 
   // --- 接触（殻が柔らかい時のみ：中身が殻を押し、両者を押し合う） ---
   if (SHELL_SOFT > 0) {
