@@ -96,7 +96,7 @@ scene.add(effect);
 // 粒子を“たまご形の内側”に閉じ込める。等値面はボール半径ぶん外へ膨らむので、
 //  そのぶん内側（MARGIN_P）にクランプして殻からはみ出さないようにする。
 const EGG_H = R * 1.32;                // 縦の半径
-const MARGIN_P = 1.4;                  // 殻からの余裕（≒ボールの等値面半径）
+const MARGIN_P = 1.6;                  // 殻からの余裕（≒ボールの等値面半径＋安全分）
 const EGG_YLIM = EGG_H - MARGIN_P;
 function confine(pos, i) {
   let y = pos[i*3+1];

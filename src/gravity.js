@@ -69,10 +69,14 @@ export function createGravity(canvas, G) {
     const a = e.accelerationIncludingGravity;
     if (!a || (a.x == null && a.y == null && a.z == null)) return;
     motionOn = true;
-    const s = G / 9.81;
-    g.x = -(a.x || 0) * s;
-    g.y = -(a.y || 0) * s;
-    g.z = -(a.z || 0) * s;
+    // 「重力＋端末の運動加速度」なので、傾けた瞬間に大きさが跳ね上がる。
+    //  大きさは使わず向きだけ取り出し、常に G に正規化する（運動スパイク除去）。
+    const ax = a.x || 0, ay = a.y || 0, az = a.z || 0;
+    const m = Math.hypot(ax, ay, az) || 1;
+    const s = G / m;
+    g.x = -ax * s;
+    g.y = -ay * s;
+    g.z = -az * s;
     commit();
   }
 
