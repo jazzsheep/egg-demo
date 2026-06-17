@@ -61,17 +61,19 @@ export function createScene(canvas, opts) {
     side: THREE.DoubleSide,
   });
 
-  // 中のかたまり：液体と固体の中間のゲル状。テカテカのビニール感を避け、
-  //  しっとりした半艶（サテン）に。clearcoat を弱め roughness を上げて、
-  //  しわに乗るシャープなハイライトを散らす。
+  // 中のかたまり：現実にない謎の物体。光沢は控えめ（マット寄り）にして
+  //  テカテカ感を消し、ごく弱い自己発光で内側からぼんやり光らせて
+  //  「正体不明のプルッとした塊」の雰囲気を出す。
   const coreMat = new THREE.MeshPhysicalMaterial({
-    color: 0x0b0d10,
-    roughness: 0.38,
+    color: 0x0d1218,
+    roughness: 0.5,
     metalness: 0.0,
-    clearcoat: 0.3,
-    clearcoatRoughness: 0.35,
-    reflectivity: 0.35,
-    envMapIntensity: 0.4,
+    clearcoat: 0.12,
+    clearcoatRoughness: 0.5,
+    reflectivity: 0.3,
+    envMapIntensity: 0.45,
+    emissive: 0x0a141c,
+    emissiveIntensity: 0.35,
     side: THREE.FrontSide,
   });
 
