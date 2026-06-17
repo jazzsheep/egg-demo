@@ -30,6 +30,7 @@ src/
   scene.js        レンダラ / カメラ / ライト / マテリアル / 環境
   gravity.js      重力入力（ドラッグ + 端末傾き）
   main.js         シミュ本体（卵と中身の構築・物理ステップ・ループ）
+  IMPLEMENTATION.md  実装の詳細解説（構造・物理モデル・調整パラメータ）
 ```
 
 three.js (r128) は CDN から `window.THREE` として読み込み、各モジュールはそれを参照します
