@@ -23,15 +23,19 @@ task status  # 稼働状況とURL
 ## 構成
 
 ```
-index.html        マークアップ + three.js(CDN) + module エントリ
+index.html        マークアップ + three.js(CDN) + MarchingCubes + module エントリ
 src/
   styles.css      見た目
-  icosphere.js    純粋な幾何・物理ヘルパ（three.js 非依存）
+  icosphere.js    純粋な幾何・物理ヘルパ（殻用。three.js 非依存）
+  metaball.js     中身の粒子シミュレーション（three.js 非依存）
   scene.js        レンダラ / カメラ / ライト / マテリアル / 環境
   gravity.js      重力入力（ドラッグ + 端末傾き）
   main.js         シミュ本体（卵と中身の構築・物理ステップ・ループ）
+  vendor/MarchingCubes.js  three.js r128 用 MarchingCubes（同梱）
   IMPLEMENTATION.md  実装の詳細解説（構造・物理モデル・調整パラメータ）
 ```
 
 three.js (r128) は CDN から `window.THREE` として読み込み、各モジュールはそれを参照します
-（バンドラ不要）。物理は Verlet 積分 + 位置ベース拘束（内圧・距離拘束・形状復元・接触）。
+（バンドラ不要）。**殻**は固定メッシュ（Verlet + 位置ベース拘束）、**中身**は粒子を
+物理シミュして毎フレーム `THREE.MarchingCubes` で滑らかな等値面（メタボール）に変換します。
+固定メッシュではないので、流れて潰れても折り目（しわ）が出ません。
