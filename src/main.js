@@ -27,7 +27,7 @@ const CONFIG = {
     smooth:    0.40,   // 表面のしわ取り。下げると丸めも弱まり形が崩れやすい
     shape:     0.0,    // 形状記憶。0=丸い形へ戻らない（流体寄り）
   },
-  gravity:     4,      // 重力の強さ（体積は保たれるので主に流れの速さに効く）
+  gravity:     6,      // 重力の強さ（大きいほど速く流れて反応がきびきびする）
 };
 
 const G = CONFIG.gravity;
@@ -123,9 +123,9 @@ const gCur = { x: 0, y: -G, z: 0 };
 function step() {
   // 重力を滑らかに追従（係数を上げて傾きへの反応をきびきびさせる）
   const gT = gravity.gTarget;
-  gCur.x += (gT.x - gCur.x) * 0.2;
-  gCur.y += (gT.y - gCur.y) * 0.2;
-  gCur.z += (gT.z - gCur.z) * 0.2;
+  gCur.x += (gT.x - gCur.x) * 0.3;
+  gCur.y += (gT.y - gCur.y) * 0.3;
+  gCur.z += (gT.z - gCur.z) * 0.3;
 
   const dt2 = DT * DT;
 
